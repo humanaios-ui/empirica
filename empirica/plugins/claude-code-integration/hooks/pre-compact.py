@@ -237,17 +237,51 @@ def _detect_empirica_session():
     return None
 
 
+# Upper bound on pre-compact stashes allowed to sit in the stash list at once.
+# A stash is only popped if this hook survives to _restore_stash; a killed run
+# leaves its stash behind, and nothing bounded them (70 seen on one box). Past
+# the cap we skip stashing: the work stays in the working tree, which is safe,
+# instead of adding another orphan.
+MAX_PRECOMPACT_STASHES = 3
+STASH_TAG = "empirica: pre-compact"
+
+
+def _count_precompact_stashes():
+    """Return how many pre-compact stashes are currently in the stash list.
+
+    Returns 0 if git cannot answer, so a failed count never blocks stashing.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash", "list", "--format=%s"], cwd=os.getcwd(), capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return 0
+        return sum(1 for line in result.stdout.splitlines() if STASH_TAG in line)
+    except Exception:
+        return 0
+
+
 def _stash_uncommitted_work(empirica_session):
     """Stash uncommitted work before snapshot.
 
-    Returns True if stash was created, False otherwise.
+    Returns True if stash was created, False otherwise (including when the
+    MAX_PRECOMPACT_STASHES cap is reached and stashing is skipped).
     """
     try:
         status_result = subprocess.run(
             ["git", "status", "--porcelain"], cwd=os.getcwd(), capture_output=True, text=True, timeout=5
         )
         if status_result.stdout.strip():
-            stash_msg = f"empirica: pre-compact {empirica_session[:8]} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            if _count_precompact_stashes() >= MAX_PRECOMPACT_STASHES:
+                print(
+                    f"⚠ pre-compact stash skipped: {MAX_PRECOMPACT_STASHES} empirica stashes already "
+                    "present. Uncommitted work stays in the working tree; run `git stash list` "
+                    "to pop or drop stale ones.",
+                    file=sys.stderr,
+                )
+                return False
+            stash_msg = f"{STASH_TAG} {empirica_session[:8]} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             result = subprocess.run(
                 ["git", "stash", "push", "-m", stash_msg, "--include-untracked"],
                 cwd=os.getcwd(),
