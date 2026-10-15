@@ -629,10 +629,13 @@ def _parse_postflight_input(args) -> dict[str, Any]:
         _postflight_parse_config_or_legacy(args)
     )
 
-    # Transaction continuity: override session_id from active transaction
+    # Transaction continuity: override session_id from active transaction.
+    # Only an OPEN transaction owns the session. A closed transaction is a
+    # stale state file; honoring it sent an explicit --session-id to the
+    # wrong session (POSTFLIGHT written to the current session, 2026-10-15).
     try:
         tx_data = R.transaction_read()
-        if tx_data and tx_data.get("session_id"):
+        if tx_data and tx_data.get("session_id") and tx_data.get("status") == "open":
             tx_session_id = tx_data["session_id"]
             if tx_session_id != session_id:
                 logger.debug(f"POSTFLIGHT: Overriding session_id: {session_id[:8]}... -> {tx_session_id[:8]}...")
