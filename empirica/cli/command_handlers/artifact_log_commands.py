@@ -6,6 +6,7 @@ Split from project_commands.py for maintainability.
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -875,8 +876,38 @@ def _decay_eidetic_by_finding(project_id, finding, subject) -> int:
     return 0
 
 
+_ORPHAN_ENFORCE_ENV = "EMPIRICA_ORPHAN_ENFORCE"
+
+
+def _enforce_orphan_connectivity(args, artifact_type: str, evidence_relation: str | None = None) -> None:
+    """Connectivity check for *-log verbs (Phase 3 orphan enforcement).
+
+    An artifact needs >=1 edge (--edge / --related-to) or --reason-no-edges.
+    Default is warn-only (stderr, write proceeds). Set EMPIRICA_ORPHAN_ENFORCE=1
+    to reject the write before anything is persisted.
+    """
+    from empirica.cli.validators import ConnectivityValidationError, validate_artifact_connectivity
+
+    edge_targets = [e["to"] for e in _collect_edges_from_args(args, evidence_relation)]
+    enforce = os.environ.get(_ORPHAN_ENFORCE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        result = validate_artifact_connectivity(
+            artifact_type=artifact_type,
+            claim_text="",
+            edge_targets=edge_targets,
+            reason_no_edges=getattr(args, "reason_no_edges", None),
+            enforce=enforce,
+        )
+    except ConnectivityValidationError as e:
+        print(f"❌ {artifact_type}-log: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not result.valid:
+        print(f"⚠️  {artifact_type}-log: {result.message}", file=sys.stderr)
+
+
 def handle_finding_log_command(args):
     """Handle finding-log command - AI-first with config file support"""
+    _enforce_orphan_connectivity(args, "finding")
     db = None
     try:
         config_data = _parse_config_input(args)
@@ -1013,6 +1044,7 @@ def handle_finding_log_command(args):
 
 def handle_unknown_log_command(args):
     """Handle unknown-log command - AI-first with config file support"""
+    _enforce_orphan_connectivity(args, "unknown")
     db = None
     try:
         config_data = _parse_config_input(args)
@@ -1353,6 +1385,7 @@ def handle_unknown_list_command(args):
 
 def handle_deadend_log_command(args):
     """Handle deadend-log command - AI-first with config file support"""
+    _enforce_orphan_connectivity(args, "dead_end")
     db = None
     try:
         config_data = _parse_config_input(args)
@@ -1498,6 +1531,7 @@ def handle_deadend_log_command(args):
 
 def handle_assumption_log_command(args):
     """Handle assumption-log command — log unverified assumptions."""
+    _enforce_orphan_connectivity(args, "assumption")
     db = None
     try:
         import time
@@ -1689,6 +1723,7 @@ def _decision_persist_qdrant(decision_id, ctx, choice, rationale, alternatives_l
 
 def handle_decision_log_command(args):
     """Handle decision-log command — log decisions with alternatives."""
+    _enforce_orphan_connectivity(args, "decision", evidence_relation="evidence")
     db = None
     try:
         config_data = _parse_config_input(args)
@@ -2711,6 +2746,7 @@ def _mistake_persist_git_and_qdrant(
 
 def handle_mistake_log_command(args):
     """Handle mistake-log command"""
+    _enforce_orphan_connectivity(args, "mistake")
     try:
         from empirica.data.session_database import SessionDatabase
 

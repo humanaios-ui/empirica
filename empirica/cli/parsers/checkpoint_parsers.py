@@ -12,6 +12,7 @@ def _add_edge_flags(parser, include_evidence_from: bool = False):
     --edge ID:RELATION  canonical form, e.g. --edge a1008873:supports
     --related-to ID     convenience, defaults relation to "related"
     --evidence-from ID  decision-log only, defaults relation to "evidence"
+    --reason-no-edges   why the artifact has no edges yet (connectivity check)
     """
     parser.add_argument(
         "--edge",
@@ -26,6 +27,12 @@ def _add_edge_flags(parser, include_evidence_from: bool = False):
         dest="related_to_ids",
         default=[],
         help="Anchor this artifact to another (relation=related). Repeatable.",
+    )
+    parser.add_argument(
+        "--reason-no-edges",
+        dest="reason_no_edges",
+        default=None,
+        help="Why this artifact has no edges yet (required when no --edge/--related-to is given).",
     )
     if include_evidence_from:
         parser.add_argument(
