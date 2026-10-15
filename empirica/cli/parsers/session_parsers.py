@@ -19,6 +19,16 @@ def add_session_parsers(subparsers):
     sessions_list_parser.add_argument("--verbose", action="store_true", help="Show detailed info")
     sessions_list_parser.add_argument("--output", choices=["human", "json"], default="human", help="Output format")
 
+    # Session close (closed-unassessed) — ends sessions without POSTFLIGHT vectors
+    session_close_parser = subparsers.add_parser(
+        "session-close",
+        help="End sessions as closed-unassessed (no POSTFLIGHT vectors). Preview unless --apply.",
+    )
+    session_close_parser.add_argument("session_ids", nargs="+", metavar="SESSION_ID", help="Session UUID(s) to close")
+    session_close_parser.add_argument("--reason", required=True, help="Why these sessions close without assessment")
+    session_close_parser.add_argument("--apply", action="store_true", help="Actually close (default: preview only)")
+    session_close_parser.add_argument("--output", choices=["human", "json"], default="json", help="Output format")
+
     # Sessions show command
     sessions_show_parser = subparsers.add_parser(
         "sessions-show", aliases=["session-show"], help="Show detailed session info"

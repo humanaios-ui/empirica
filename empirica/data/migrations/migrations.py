@@ -1471,6 +1471,11 @@ ALL_MIGRATIONS: list[tuple[str, str, Callable]] = [
         "Add nullable engagement_id column to goals — scopes a goal to an engagement (the artifact → goal → engagement linkage of the engagement substrate). Cross-db by-id reference (goals in sessions.db, engagements in workspace.db); no FK, enforced at the API layer.",
         lambda cursor: migration_051_goals_engagement_id(cursor),
     ),
+    (
+        "052_sessions_status",
+        "Add nullable status column to sessions — marks sessions ended without a POSTFLIGHT assessment (closed-unassessed).",
+        lambda cursor: migration_052_sessions_status(cursor),
+    ),
 ]
 
 
@@ -2160,3 +2165,12 @@ def migration_048_beads_table(cursor: sqlite3.Cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_beads_beads_issue_id ON beads(beads_issue_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_beads_transaction ON beads(transaction_id)")
     logger.info("✅ Migration 048 complete: beads table created (coordination-records v0)")
+
+
+def migration_052_sessions_status(cursor: sqlite3.Cursor):
+    """Add nullable `status` TEXT to sessions.
+
+    NULL for every session ended normally. Set to 'closed-unassessed' by
+    `empirica session-close` when a session is ended without POSTFLIGHT vectors.
+    """
+    add_column_if_missing(cursor, "sessions", "status", "TEXT")

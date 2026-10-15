@@ -346,6 +346,7 @@ def create_argument_parser():
 _HELP_CATEGORIES = {
     "session": [
         "session-create",
+        "session-close",
         "sessions-list",
         "sessions-show",
         "sessions-export",
@@ -611,6 +612,7 @@ def main(args=None):
         command_handlers = {
             # Session commands
             "session-create": handle_session_create_command,
+            "session-close": handle_session_close_command,
             "sessions-list": handle_sessions_list_command,
             "sessions-show": handle_sessions_show_command,
             "sessions-export": handle_sessions_export_command,

@@ -251,6 +251,27 @@ class SessionRepository(BaseRepository):
             (datetime.utcnow().isoformat(), avg_confidence, drift_detected, notes, session_id),
         )
 
+    def close_session_unassessed(self, session_id: str, reason: str) -> bool:
+        """End a session as closed-unassessed. Writes no POSTFLIGHT vectors.
+
+        Returns False when the session does not exist or has already ended.
+        """
+        cursor = self._execute("SELECT end_time FROM sessions WHERE session_id = ?", (session_id,))
+        row = cursor.fetchone()
+        if row is None or row[0] is not None:
+            return False
+        self._execute(
+            """
+            UPDATE sessions
+            SET end_time = ?,
+                status = 'closed-unassessed',
+                session_notes = ?
+            WHERE session_id = ? AND end_time IS NULL
+        """,
+            (datetime.utcnow().isoformat(), f"closed-unassessed: {reason}", session_id),
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Subagent session operations (migration 034 — isolated from main
     # `sessions` table to prevent pollution of recent-sessions diagnostics

@@ -242,6 +242,7 @@ from .session_commands import (
     handle_transaction_adopt_command,
 )
 from .session_create import handle_session_create_command
+from .session_close import handle_session_close_command
 from .setup_claude_code import handle_plugin_sync_command, handle_setup_claude_code_command
 from .skill_commands import (
     handle_skill_extract_command,
@@ -470,6 +471,7 @@ __all__ = [  # noqa: RUF022
     "handle_services_audit_command",
     # Checkpoint commands (Phase 2)
     "handle_session_create_command",
+    "handle_session_close_command",
     "handle_session_snapshot_command",
     "handle_sessions_export_command",
     "handle_sessions_export_command",
