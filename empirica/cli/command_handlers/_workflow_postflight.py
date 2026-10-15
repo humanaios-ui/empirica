@@ -267,7 +267,7 @@ def _pipeline_workspace_index_sync(session_id, project_id):
         from empirica.core.qdrant.connection import _check_qdrant_available as _ws_check
         from empirica.utils.session_resolver import InstanceResolver as _R
 
-        _ws_tx = _R.transaction_read()
+        _ws_tx = _active_tx()
         _ws_tx_id = _ws_tx.get("transaction_id") if _ws_tx else None
         if _ws_check() and _ws_tx_id:
             from empirica.core.qdrant.workspace_index import sync_transaction_to_index
@@ -529,7 +529,11 @@ def _postflight_parse_config_or_legacy(args):
     config_data, output_format = _parse_workflow_input(args, "POSTFLIGHT")
 
     if config_data:
-        session_id = config_data.get("session_id") or getattr(args, "session_id", None)
+        session_id = (
+            config_data.get("session_id")
+            or getattr(args, "session_id", None)
+            or (_NAMED_TX or {}).get("session_id")
+        )
         vectors = config_data.get("vectors")
         reasoning = config_data.get("reasoning", "")
         grounded_vectors = config_data.get("grounded_vectors")
@@ -580,6 +584,66 @@ def _postflight_parse_config_or_legacy(args):
             sys.exit(1)
 
     return session_id, vectors, reasoning, grounded_vectors, grounded_rationale, coverage, output_format
+
+
+# Named-transaction close (postflight-submit --transaction-id). When set, every
+# read of "the active transaction" in this module returns the named one, so a
+# stale open transaction can be closed without touching the active-txn file.
+_NAMED_TX = None
+
+
+def _named_transaction(transaction_id):
+    """Resolve a named transaction from its PREFLIGHT reflex row.
+
+    Returns None when no name was given. Raises ValueError when the transaction
+    has no PREFLIGHT in this project DB or already has a POSTFLIGHT.
+    """
+    if not transaction_id:
+        return None
+    from empirica.data.session_database import SessionDatabase
+
+    db = SessionDatabase()
+    cur = db.conn.cursor()
+    pre = cur.execute(
+        "SELECT session_id, timestamp FROM reflexes "
+        "WHERE transaction_id = ? AND phase = 'PREFLIGHT' "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (transaction_id,),
+    ).fetchone()
+    if pre is None:
+        raise ValueError(f"no PREFLIGHT found for transaction {transaction_id[:8]} in this project DB")
+    post = cur.execute(
+        "SELECT COUNT(*) FROM reflexes WHERE transaction_id = ? AND phase = 'POSTFLIGHT'",
+        (transaction_id,),
+    ).fetchone()[0]
+    if post:
+        raise ValueError(f"transaction {transaction_id[:8]} already has a POSTFLIGHT")
+    return {
+        "transaction_id": transaction_id,
+        "session_id": pre[0],
+        "preflight_timestamp": pre[1],
+        "status": "open",
+    }
+
+
+def _active_tx():
+    """The transaction this POSTFLIGHT closes: the named one, else the active file."""
+    if _NAMED_TX is not None:
+        return dict(_NAMED_TX)
+    return R.transaction_read()
+
+
+def _named_writes_active():
+    """True unless a named close targets a transaction other than the active file's."""
+    if _NAMED_TX is None:
+        return True
+    return (R.transaction_read() or {}).get("transaction_id") == _NAMED_TX["transaction_id"]
+
+
+def _write_active_tx(**kwargs):
+    """Close the active-transaction file, unless a named close leaves it alone."""
+    if _named_writes_active():
+        R.transaction_write(**kwargs)
 
 
 def _postflight_resolve_preflight_session(session_id):
@@ -634,7 +698,7 @@ def _parse_postflight_input(args) -> dict[str, Any]:
     # stale state file; honoring it sent an explicit --session-id to the
     # wrong session (POSTFLIGHT written to the current session, 2026-10-15).
     try:
-        tx_data = R.transaction_read()
+        tx_data = _active_tx()
         if tx_data and tx_data.get("session_id") and tx_data.get("status") == "open":
             tx_session_id = tx_data["session_id"]
             if tx_session_id != session_id:
@@ -771,6 +835,13 @@ def _postflight_close_and_capture_counters(result, resolved_project_path, suffix
     """Read transaction file, capture counters, close transaction. Modifies result in-place."""
     import json as _json
 
+    if _NAMED_TX is not None:
+        result["transaction_id"] = _NAMED_TX["transaction_id"]
+        if not _named_writes_active():
+            # Named close of a transaction other than the active one: the active-transaction
+            # file belongs to a different transaction, so take no metadata from it.
+            return
+
     if resolved_project_path:
         tx_file = Path(resolved_project_path) / ".empirica" / f"active_transaction{suffix}.json"
     else:
@@ -818,7 +889,7 @@ def _postflight_close_and_capture_counters(result, resolved_project_path, suffix
     )
     _saved_enrichment = {k: tx_data[k] for k in _enrichment_keys if tx_data.get(k)}
 
-    R.transaction_write(
+    _write_active_tx(
         transaction_id=result["transaction_id"],
         session_id=tx_data.get("session_id"),
         preflight_timestamp=tx_data.get("preflight_timestamp"),
@@ -826,9 +897,9 @@ def _postflight_close_and_capture_counters(result, resolved_project_path, suffix
         project_path=tx_data.get("project_path") or resolved_project_path,
     )
 
-    if _saved_enrichment:
+    if _saved_enrichment and _named_writes_active():
         try:
-            _closed_tx = R.transaction_read() or {}
+            _closed_tx = _active_tx() or {}
             _closed_tx.update(_saved_enrichment)
             _tx_suffix = R.instance_suffix()
             _tx_proj = _closed_tx.get("project_path", resolved_project_path)
@@ -875,7 +946,7 @@ def _close_postflight_transaction(session_id):
     try:
         from empirica.data.repositories.workspace_db import WorkspaceDBRepository
 
-        _pf_tx = R.transaction_read()
+        _pf_tx = _active_tx()
         if _pf_tx and _pf_tx.get("transaction_id"):
             with WorkspaceDBRepository.open() as _pf_ws:
                 _pf_links = _pf_ws.get_entity_artifacts_by_transaction(_pf_tx["transaction_id"])
@@ -986,7 +1057,7 @@ def _run_postflight_compliance(session_id, transaction_id, work_type, resolved_p
         if not ServiceRegistry.list_all():
             ServiceRegistry.load_builtins()
         # Read domain/criticality from transaction file
-        _tx = R.transaction_read() or {}
+        _tx = _active_tx() or {}
         _pf_domain = _tx.get("domain")
         _pf_criticality = _tx.get("criticality")
         _pf_work_type = _tx.get("work_type", work_type)
@@ -1032,7 +1103,7 @@ def _postflight_add_compliance_block(result, compliance_result, compliance_error
         return
 
     compliance_dict = compliance_result.to_dict()
-    _tx = R.transaction_read() or {}
+    _tx = _active_tx() or {}
     _predictions = _tx.get("predicted_check_outcomes", {})
     if _predictions and compliance_result.check_results:
         for cr in compliance_result.check_results:
@@ -1256,7 +1327,7 @@ def _cortex_extract_transaction_delta(session_id):
     """Extract this transaction's artifacts for Cortex sync. Returns dict."""
     _tx_delta = {}
     try:
-        _tx_data = R.transaction_read()
+        _tx_data = _active_tx()
         _tx_id = _tx_data.get("transaction_id", "") if _tx_data else ""
         if not _tx_id:
             return _tx_delta
@@ -1408,7 +1479,7 @@ def _cortex_extract_transaction_graph(session_id):
     rows. Wholly best-effort: any failure degrades to a partial/empty graph.
     """
     try:
-        _tx_data = R.transaction_read()
+        _tx_data = _active_tx()
         _tx_id = _tx_data.get("transaction_id", "") if _tx_data else ""
         if not _tx_id:
             return {}
@@ -1695,6 +1766,8 @@ def handle_postflight_submit_command(args):
         from empirica.core.canonical.git_enhanced_reflex_logger import GitEnhancedReflexLogger
 
         # Stage 1: Parse and validate input
+        global _NAMED_TX
+        _NAMED_TX = _named_transaction(getattr(args, "transaction_id", None))
         parsed = _parse_postflight_input(args)
         session_id = parsed["session_id"]
         vectors = parsed["vectors"]

@@ -260,6 +260,13 @@ def add_cascade_parsers(subparsers):
         nargs="?",
         help=_HELP_CONFIG,
     )
+    postflight_submit_parser.add_argument(
+        "--transaction-id",
+        default=None,
+        help="Close this named transaction instead of the active one. Its session is "
+        "taken from its PREFLIGHT row. Refuses if it has no PREFLIGHT or already has a "
+        "POSTFLIGHT. Leaves the active-transaction file alone unless it names this one.",
+    )
 
     postflight_submit_parser.add_argument(
         "--session-id",
