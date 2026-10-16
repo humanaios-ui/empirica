@@ -534,6 +534,26 @@ def _resolve_graph_context(graph: dict, args, db) -> dict | None:
     }
 
 
+def _orphan_node_refs(graph: dict) -> list[str]:
+    """Refs of graph nodes with no edge (in or out) and no data.reason_no_edges.
+
+    A node with no ref cannot be wired to anything, so it is reported as "".
+    """
+    touched = set()
+    for edge in graph.get("edges") or []:
+        for key in ("from", "to"):
+            if edge.get(key):
+                touched.add(str(edge[key]))
+    orphans = []
+    for node in graph.get("nodes") or []:
+        ref = str(node.get("ref") or "")
+        reason = (node.get("data") or {}).get("reason_no_edges")
+        if reason or (ref and ref in touched):
+            continue
+        orphans.append(ref)
+    return orphans
+
+
 def log_artifacts_graph(
     graph: dict,
     *,
@@ -547,11 +567,28 @@ def log_artifacts_graph(
     Daemon's POST /api/v1/artifacts/log calls this directly; CLI's
     handle_log_artifacts_command wraps it to print JSON + return exit code.
 
+    Orphan policy (same gate as the *-log verbs): every node needs >=1 edge or
+    data.reason_no_edges. With EMPIRICA_ORPHAN_ENFORCE=1 the batch is rejected
+    before anything is written; otherwise orphans are warned on stderr and the write proceeds.
+
     Resolution priority for context: explicit args > graph["session_id"|...] > R.context().
     Returns: {"ok": bool, "created": {ref: id}, "nodes_created": int,
               "edges_wired": int, "errors": [str], "alias_warnings"?: [str]}
     """
+    import os
+
     from empirica.data.session_database import SessionDatabase
+
+    orphans = _orphan_node_refs(graph)
+    if orphans:
+        message = (
+            f"log-artifacts: {len(orphans)} node(s) with no edge: {orphans}. "
+            "Add an edge or set data.reason_no_edges."
+        )
+        enforce = os.environ.get("EMPIRICA_ORPHAN_ENFORCE", "").strip().lower() in {"1", "true", "yes", "on"}
+        if enforce:
+            return {"ok": False, "created": {}, "nodes_created": 0, "edges_wired": 0, "errors": [message]}
+        print(f"⚠️  {message}", file=sys.stderr)
 
     db = SessionDatabase()
     try:

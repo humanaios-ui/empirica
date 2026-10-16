@@ -1445,6 +1445,10 @@ Accepts JSON on stdin (or from file) with nodes (typed artifacts)
 and edges (relationships between them). Creates in dependency order,
 resolves local refs to UUIDs, wires edges.
 
+Orphan policy: every node needs >=1 edge (from or to its ref) or
+data.reason_no_edges. Orphans are warned by default; set
+EMPIRICA_ORPHAN_ENFORCE=1 to reject the whole batch before any write.
+
 Example:
   echo '{"nodes": [{"ref": "f1", "type": "finding", "data": {"finding": "X", "impact": 0.7}}]}' | empirica log-artifacts -
         """,

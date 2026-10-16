@@ -214,3 +214,61 @@ class TestLogVerbEnforcement:
         _add_edge_flags(p)
         ns = p.parse_args(["--reason-no-edges", "why"])
         assert ns.reason_no_edges == "why"
+
+
+class TestLogArtifactsBatchOrphans:
+    """Orphan policy on the log-artifacts graph path (CLI and daemon share it)."""
+
+    def test_connected_node_is_not_orphan(self):
+        from empirica.cli.command_handlers.graph_commands import _orphan_node_refs
+
+        graph = {
+            "nodes": [{"ref": "f1", "type": "finding"}, {"ref": "u1", "type": "unknown"}],
+            "edges": [{"from": "u1", "to": "f1", "relation": "raised_by"}],
+        }
+        assert _orphan_node_refs(graph) == []
+
+    def test_isolated_node_is_orphan(self):
+        from empirica.cli.command_handlers.graph_commands import _orphan_node_refs
+
+        graph = {
+            "nodes": [{"ref": "f1", "type": "finding"}, {"ref": "f2", "type": "finding"}],
+            "edges": [{"from": "f1", "to": "f2", "relation": "related"}],
+        }
+        assert _orphan_node_refs(graph) == []
+        graph["nodes"].append({"ref": "f3", "type": "finding"})
+        assert _orphan_node_refs(graph) == ["f3"]
+
+    def test_reason_no_edges_exempts_node(self):
+        from empirica.cli.command_handlers.graph_commands import _orphan_node_refs
+
+        graph = {"nodes": [{"ref": "f1", "type": "finding", "data": {"reason_no_edges": "standalone"}}]}
+        assert _orphan_node_refs(graph) == []
+
+    def test_enforce_rejects_batch_before_write(self, monkeypatch):
+        from empirica.cli.command_handlers.graph_commands import log_artifacts_graph
+
+        monkeypatch.setenv("EMPIRICA_ORPHAN_ENFORCE", "1")
+        graph = {"nodes": [{"ref": "f1", "type": "finding"}]}
+        result = log_artifacts_graph(graph)
+        assert result["ok"] is False
+        assert result["nodes_created"] == 0
+        assert "f1" in result["errors"][0]
+
+    def test_warn_mode_does_not_reject(self, monkeypatch, capsys):
+        from empirica.cli.command_handlers import graph_commands
+
+        monkeypatch.delenv("EMPIRICA_ORPHAN_ENFORCE", raising=False)
+        # Stop before any DB work: the warning is printed first, then the write path runs.
+        monkeypatch.setattr(graph_commands, "_orphan_node_refs", lambda g: ["f1"])
+
+        class _Stop(Exception):
+            pass
+
+        def _boom(*a, **k):
+            raise _Stop
+
+        monkeypatch.setattr("empirica.data.session_database.SessionDatabase", _boom)
+        with pytest.raises(_Stop):
+            graph_commands.log_artifacts_graph({"nodes": [{"ref": "f1", "type": "finding"}]})
+        assert "no edge" in capsys.readouterr().err
